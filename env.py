@@ -174,6 +174,11 @@ class PokemonTCGEnv(gym.Env):
         self.step_count += 1
         
         # Get options and constraints
+        if self.obs_dict is None:
+            # Game ended during reset or prior transitions
+            state_vec = np.zeros(STATE_DIM, dtype=np.float32)
+            return state_vec, -1.0, True, False, {}
+            
         select_data = self.obs_dict.get("select", {})
         options = select_data.get("option", [])
         min_count = select_data.get("minCount", 0)

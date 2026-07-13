@@ -102,7 +102,7 @@ def evaluate_agent(eval_env, model, eval_games=20) -> float:
             obs, reward, terminated, truncated, info = eval_env.step(action)
             done = terminated or truncated
             
-        current = eval_env.unwrapped.obs_dict.get("current")
+        current = eval_env.unwrapped.obs_dict.get("current") if eval_env.unwrapped.obs_dict is not None else None
         if current and current.get("result") == 0:
             wins += 1
             
