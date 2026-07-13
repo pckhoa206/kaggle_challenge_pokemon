@@ -156,6 +156,8 @@ class PokemonTCGEnv(gym.Env):
     def _fast_forward_opponent(self):
         """Play opponent's turns automatically until it is the Agent's turn or game finishes."""
         while True:
+            if self.obs_dict is None:
+                break
             current = self.obs_dict.get("current")
             if not current or current.get("result", -1) != -1:
                 break
@@ -214,6 +216,11 @@ class PokemonTCGEnv(gym.Env):
         self._fast_forward_opponent()
         
         # Evaluate state
+        if self.obs_dict is None:
+            # Game ended during opponent's fast forward (we lost)
+            state_vec = np.zeros(STATE_DIM, dtype=np.float32)
+            return state_vec, -1.0, True, False, {}
+            
         current = self.obs_dict.get("current")
         obs = to_observation_class(self.obs_dict)
         state_vec = self._extract_state(obs)
