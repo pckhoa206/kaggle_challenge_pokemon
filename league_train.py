@@ -121,8 +121,8 @@ def main():
         print("WARNING: model_Champion.zip not found! Starting fresh.")
         model = init_model(env)
         
-    EPOCHS = 60
-    STEPS_PER_EPOCH = 500000
+    EPOCHS = 40
+    STEPS_PER_EPOCH = 250000
     
     print(f"Starting League Training for {EPOCHS} Epochs ({EPOCHS * STEPS_PER_EPOCH} steps)...")
     
