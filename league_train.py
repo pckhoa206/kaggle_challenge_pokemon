@@ -61,7 +61,8 @@ def init_model(env):
         features_extractor_kwargs=dict(features_dim=256),
         net_arch=dict(pi=[256, 256, 256], vf=[256, 256, 256])
     )
-    return MaskablePPO("MlpPolicy", env, policy_kwargs=policy_kwargs, learning_rate=2e-4, n_steps=2048, batch_size=128, verbose=0)
+    device = "mps" if th.backends.mps.is_available() else ("cuda" if th.cuda.is_available() else "cpu")
+    return MaskablePPO("MlpPolicy", env, policy_kwargs=policy_kwargs, learning_rate=2e-4, n_steps=2048, batch_size=128, verbose=0, device=device)
 
 def get_random_ghost(category):
     if category == "recent":
@@ -109,6 +110,10 @@ def main():
     
     init_league()
     
+    # Detect device
+    device = "mps" if th.backends.mps.is_available() else ("cuda" if th.cuda.is_available() else "cpu")
+    print(f"Using training device: {device}")
+    
     # Load Champion
     with open("deck.csv", "r") as f:
         champion_deck = [int(line.strip()) for line in f.read().split("\n") if line.strip()][:60]
@@ -116,7 +121,7 @@ def main():
     env = PokemonTCGEnv(player_deck=champion_deck)
     print("Loading Fire_Balanced Champion...")
     if os.path.exists("model_Champion.zip"):
-        model = MaskablePPO.load("model_Champion.zip", env=env)
+        model = MaskablePPO.load("model_Champion.zip", env=env, device=device)
     else:
         print("WARNING: model_Champion.zip not found! Starting fresh.")
         model = init_model(env)
@@ -155,7 +160,7 @@ def main():
                 ghost_zip, ghost_csv = get_random_ghost("historical")
                 
         if ghost_zip and opp_policy.mode == "rl":
-            opp_model = MaskablePPO.load(ghost_zip)
+            opp_model = MaskablePPO.load(ghost_zip, device=device)
             opp_policy.model = opp_model
             opponent_name = os.path.basename(ghost_zip)
             

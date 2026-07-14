@@ -131,8 +131,9 @@ def export_to_onnx(model, onnx_path="model.onnx"):
     onnx_wrapper = ONNXWrapper(model.policy)
     onnx_wrapper.eval()
     
-    # Create dummy input tensor
-    dummy_input = th.randn(1, 144)
+    # Create dummy input tensor on the same device as the model
+    device = next(model.policy.parameters()).device
+    dummy_input = th.randn(1, 164, device=device)
     
     # Export to ONNX file
     th.onnx.export(

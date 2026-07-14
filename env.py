@@ -3,11 +3,16 @@ import gymnasium as gym
 import numpy as np
 import random
 from cg.game import battle_start, battle_select, battle_finish
-from cg.api import to_observation_class, Observation, AreaType, OptionType, SelectContext
+from cg.api import to_observation_class, Observation, OptionType, all_card_data
 from main import score_option, read_deck_csv
 
+try:
+    CARD_DATA_MAP = {c.cardId: c for c in all_card_data()}
+except Exception:
+    CARD_DATA_MAP = {}
+
 MAX_OPTIONS = 50
-STATE_DIM = 144
+STATE_DIM = 164
 
 class PokemonTCGEnv(gym.Env):
     """Custom Gymnasium environment for Pokemon TCG wrapping the cabt engine."""
@@ -68,6 +73,14 @@ class PokemonTCGEnv(gym.Env):
         state[idx] = len(player.hand or []) / 10.0; idx += 1
         state[idx] = player.deckCount / 60.0; idx += 1
         state[idx] = len(player.prize) / 6.0; idx += 1
+        
+        # Hand Cards (max 10)
+        hand_cards = player.hand or []
+        for i in range(10):
+            card = hand_cards[i] if i < len(hand_cards) else None
+            card_data = CARD_DATA_MAP.get(card.id) if card else None
+            state[idx] = card.id / 1500.0 if card else 0.0; idx += 1
+            state[idx] = int(card_data.cardType) / 7.0 if card_data else 0.0; idx += 1
         
         # Player 1 (Opponent) features
         opp_active = opponent.active[0] if opponent.active else None

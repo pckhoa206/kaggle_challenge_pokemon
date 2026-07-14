@@ -53,8 +53,8 @@ def init_onnx_model():
         _ONNX_LOADED = False
 
 def extract_state_for_onnx(obs: Observation) -> list:
-    """Extract flat state vector of size 144 matching the DRL Env extraction."""
-    state = [0.0] * 144
+    """Extract flat state vector of size 164 matching the DRL Env extraction."""
+    state = [0.0] * 164
     if not obs or not obs.current:
         return state
         
@@ -81,6 +81,14 @@ def extract_state_for_onnx(obs: Observation) -> list:
     state[idx] = len(player.hand or []) / 10.0; idx += 1
     state[idx] = player.deckCount / 60.0; idx += 1
     state[idx] = len(player.prize) / 6.0; idx += 1
+    
+    # Hand Cards (max 10)
+    hand_cards = player.hand or []
+    for i in range(10):
+        card = hand_cards[i] if i < len(hand_cards) else None
+        card_data = CARD_DATA_MAP.get(card.id) if card else None
+        state[idx] = card.id / 1500.0 if card else 0.0; idx += 1
+        state[idx] = int(card_data.cardType) / 7.0 if card_data else 0.0; idx += 1
     
     # Player 1 (Opponent) features
     opp_active = opponent.active[0] if opponent.active else None
@@ -377,8 +385,24 @@ def score_option(obs, opt, context, your_idx: int) -> float:
                 
         elif opt_type == OptionType.PLAY:
             card = get_card_id(obs, opt, your_idx)
-            if card in (1235, 1205): score = 9400.0
-            elif card == 1227: score = 9300.0
+            if card == 1205: # Cyrano (Search ex)
+                has_gf_ex = False
+                active_pkmn = player.active[0] if player.active else None
+                if active_pkmn and active_pkmn.id == 46:
+                    has_gf_ex = True
+                for pkmn in player.bench:
+                    if pkmn.id == 46:
+                        has_gf_ex = True
+                for c in (player.hand or []):
+                    if c.id == 46:
+                        has_gf_ex = True
+                
+                # If we don't have Gouging Fire ex, Cyrano is top priority. Otherwise, save supporter turn for drawing.
+                score = 9400.0 if not has_gf_ex else 100.0
+            elif card == 1235: # Waitress (Draw)
+                score = 9400.0
+            elif card == 1227: # Lillie (Draw)
+                score = 9300.0
             elif card == 1145: 
                 score = 100.0
             else: score = 8000.0
