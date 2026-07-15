@@ -300,36 +300,31 @@ def score_option(obs, opt, context, your_idx: int) -> float:
         elif card_id in (31, 77, 97, 76): score = 800.0
         else: score = 100.0
             
-    elif context in (SelectContext.SWITCH, SelectContext.TO_ACTIVE, SelectContext.ATTACH_FROM):
+    elif context in (SelectContext.SWITCH, SelectContext.TO_ACTIVE):
         pkmn = get_pokemon_from_option(obs, opt, your_idx)
         if pkmn:
             energy_count = len(pkmn.energies)
-            if context == SelectContext.ATTACH_FROM:
-                if pkmn.id == 46 and energy_count < 3:
-                    score = 3200.0 if opt.area == AreaType.ACTIVE else 3000.0
-                elif pkmn.id == 31 and energy_count < 2:
-                    score = 2900.0 if opt.area == AreaType.ACTIVE else 2400.0
-                else: score = 1000.0
+            if pkmn.id == 46:
+                score = 10000.0 + energy_count * 1000.0 + pkmn.hp
+            elif pkmn.id == 31:
+                score = 8000.0 + energy_count * 1000.0 + pkmn.hp
             else:
-                opp_active = opponent.active[0] if opponent.active else None
-                opp_hp = opp_active.hp if opp_active else 999
-                max_dmg = get_max_attack_damage(obs, your_idx)
-                can_ko = (max_dmg >= opp_hp)
-                
-                if not can_ko:
-                    if pkmn.id == 46 and energy_count >= 3:
-                        score = 13000.0 # Strongly promote powered up main attacker!
-                    elif pkmn.id == 31 and energy_count >= 2:
-                        score = 11000.0
-                    elif pkmn.id != 46: 
-                        score = 500.0 + pkmn.hp # normal priority
-                    else:
-                        score = 100.0
-                else:
-                    if pkmn.id == 46: score = 20000.0 + energy_count * 100.0
-                    elif pkmn.id == 31: score = 15000.0 + energy_count * 100.0
-                    else: score = 500.0 + pkmn.hp
-        else: score = 100.0
+                score = 500.0 + pkmn.hp
+        else:
+            score = 100.0
+            
+    elif context == SelectContext.ATTACH_FROM:
+        pkmn = get_pokemon_from_option(obs, opt, your_idx)
+        if pkmn:
+            energy_count = len(pkmn.energies)
+            if pkmn.id == 46 and energy_count < 3:
+                score = 3200.0 if opt.area == AreaType.ACTIVE else 3000.0
+            elif pkmn.id == 31 and energy_count < 2:
+                score = 2900.0 if opt.area == AreaType.ACTIVE else 2400.0
+            else:
+                score = 1000.0
+        else:
+            score = 100.0
             
     elif context == SelectContext.ATTACH_TO:
         if card_id == 2: score = 1000.0
@@ -358,7 +353,7 @@ def score_option(obs, opt, context, your_idx: int) -> float:
         
         if opt_type == OptionType.ATTACK:
             if can_ko_active: score = 15000.0 
-            else: score = 10000.0 
+            else: score = 7000.0 
                 
         elif opt_type == OptionType.EVOLVE:
             score = 9500.0
@@ -449,7 +444,7 @@ def agent(obs_dict: dict) -> list[int]:
                     if score > best_score:
                         best_score = score
                         best_idx = i
-                if best_score >= 8500.0:
+                if best_score >= 12000.0:
                     # GOD MOVE DETECTED! OVERRIDE RL!
                     return [best_idx]
             
