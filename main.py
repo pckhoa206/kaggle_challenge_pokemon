@@ -10,7 +10,11 @@ from cg.api import (
     AreaType,
     CardType,
     all_card_data,
-    all_attack
+    all_attack,
+    search_begin,
+    search_step,
+    search_end,
+    search_release
 )
 
 # Global card and attack database maps for Heuristic logic
@@ -23,6 +27,27 @@ try:
     ATTACK_DMG_MAP = {a.attackId: a.damage for a in all_attack()}
 except Exception:
     ATTACK_DMG_MAP = {}
+
+def _read_deck_csv_top() -> list[int]:
+    file_path = "deck.csv"
+    if not os.path.exists(file_path):
+        file_path = "/kaggle_simulations/agent/" + file_path
+    if not os.path.exists(file_path):
+        return []
+    try:
+        with open(file_path, "r") as file:
+            csv = file.read().split("\n")
+        return [int(line) for line in csv if line.strip()]
+    except Exception:
+        return []
+
+try:
+    _CURRENT_DECK = _read_deck_csv_top()
+except Exception:
+    _CURRENT_DECK = []
+
+def is_playing_abomasnow() -> bool:
+    return 723 in _CURRENT_DECK
 
 # Global variables for ONNX inference session
 _ONNX_SESSION = None
@@ -263,6 +288,10 @@ def get_max_attack_damage(obs, your_idx: int) -> int:
         return 20
     elif active_pkmn.id == 76: # Slugma
         return 10
+    elif active_pkmn.id == 723: # Mega Abomasnow ex
+        return 200 # Hammer-lanche / Frost Barrier
+    elif active_pkmn.id == 722: # Snover
+        return 30 # Icy Snow
     return 10
 
 def calculate_enemy_max_damage_next_turn(obs: Observation, opp_idx: int) -> int:
@@ -291,20 +320,20 @@ def score_option(obs, opt, context, your_idx: int) -> float:
     card_id = get_card_id(obs, opt, your_idx)
     
     if context == SelectContext.SETUP_ACTIVE_POKEMON:
-        if card_id == 46: score = 1000.0
-        elif card_id == 31: score = 500.0
+        if card_id in (46, 723): score = 1000.0
+        elif card_id in (31, 722): score = 500.0
         else: score = 100.0
             
     elif context == SelectContext.SETUP_BENCH_POKEMON:
-        if card_id == 46: score = 1000.0
-        elif card_id in (31, 77, 97, 76): score = 800.0
+        if card_id in (46, 723): score = 1000.0
+        elif card_id in (31, 77, 97, 76, 722): score = 800.0
         else: score = 100.0
             
     elif context in (SelectContext.SWITCH, SelectContext.TO_ACTIVE):
         pkmn = get_pokemon_from_option(obs, opt, your_idx)
         if pkmn:
             energy_count = len(pkmn.energies)
-            if pkmn.id == 46:
+            if pkmn.id in (46, 723):
                 score = 10000.0 + energy_count * 1000.0 + pkmn.hp
             elif pkmn.id == 31:
                 score = 8000.0 + energy_count * 1000.0 + pkmn.hp
@@ -317,7 +346,7 @@ def score_option(obs, opt, context, your_idx: int) -> float:
         pkmn = get_pokemon_from_option(obs, opt, your_idx)
         if pkmn:
             energy_count = len(pkmn.energies)
-            if pkmn.id == 46 and energy_count < 3:
+            if pkmn.id in (46, 723) and energy_count < 3:
                 score = 3200.0 if opt.area == AreaType.ACTIVE else 3000.0
             elif pkmn.id == 31 and energy_count < 2:
                 score = 2900.0 if opt.area == AreaType.ACTIVE else 2400.0
@@ -327,14 +356,14 @@ def score_option(obs, opt, context, your_idx: int) -> float:
             score = 100.0
             
     elif context == SelectContext.ATTACH_TO:
-        if card_id == 2: score = 1000.0
+        if card_id in (2, 3): score = 1000.0
         else: score = 100.0
             
     elif context in (SelectContext.TO_HAND, SelectContext.TO_BENCH, SelectContext.TO_FIELD):
-        if card_id == 46: score = 3000.0
+        if card_id in (46, 723): score = 3000.0
         elif card_id == 31: score = 2500.0
         elif card_id in (1235, 1205, 1227): score = 1800.0
-        elif card_id == 2: score = 1000.0
+        elif card_id in (2, 3): score = 1000.0
         else: score = 500.0
             
     elif context in (SelectContext.ACTIVATE, SelectContext.MULLIGAN, SelectContext.COIN_HEAD, SelectContext.IS_FIRST) or opt_type in (OptionType.YES, OptionType.NO):
@@ -367,45 +396,132 @@ def score_option(obs, opt, context, your_idx: int) -> float:
                 if opt.area == AreaType.HAND and player.hand and 0 <= opt.index < len(player.hand):
                     card = player.hand[opt.index]
                 if card and pkmn:
-                    if card.id == 2: 
+                    if card.id in (2, 3): 
                         energy_count = len(pkmn.energies)
                         if opt.inPlayArea == AreaType.ACTIVE:
-                            if pkmn.id == 46 and energy_count < 3: score = 8800.0
+                            if (pkmn.id == 46 or pkmn.id == 723) and energy_count < 3: score = 8800.0
                             elif pkmn.id == 31 and energy_count < 2: score = 8750.0
                             else: score = 1000.0
                         elif opt.inPlayArea == AreaType.BENCH:
-                            if pkmn.id == 46 and energy_count < 3: score = 8600.0
+                            if (pkmn.id == 46 or pkmn.id == 723) and energy_count < 3: score = 8600.0
                             elif pkmn.id == 31 and energy_count < 2: score = 8500.0
                             else: score = 900.0
                 
         elif opt_type == OptionType.PLAY:
             card = get_card_id(obs, opt, your_idx)
             if card == 1205: # Cyrano (Search ex)
-                has_gf_ex = False
+                has_ex = False
                 active_pkmn = player.active[0] if player.active else None
-                if active_pkmn and active_pkmn.id == 46:
-                    has_gf_ex = True
+                if active_pkmn and active_pkmn.id in (46, 723):
+                    has_ex = True
                 for pkmn in player.bench:
-                    if pkmn.id == 46:
-                        has_gf_ex = True
+                    if pkmn.id in (46, 723):
+                        has_ex = True
                 for c in (player.hand or []):
-                    if c.id == 46:
-                        has_gf_ex = True
+                    if c.id in (46, 723):
+                        has_ex = True
                 
-                # If we don't have Gouging Fire ex, Cyrano is top priority. Otherwise, save supporter turn for drawing.
-                score = 9400.0 if not has_gf_ex else 100.0
+                # If we don't have any ex, Cyrano is top priority. Otherwise, save supporter turn for drawing.
+                score = 9400.0 if not has_ex else 100.0
             elif card == 1235: # Waitress (Draw)
                 score = 9400.0
             elif card == 1227: # Lillie (Draw)
                 score = 9300.0
-            elif card == 1145: 
-                score = 100.0
+            elif card == 1145: # Mega Signal
+                score = 9500.0 if is_playing_abomasnow() else 100.0
             else: score = 8000.0
                 
         elif opt_type == OptionType.RETREAT:
             score = 100.0
                 
     return score
+
+def predict_card_lists(obs: Observation):
+    your_idx = obs.current.yourIndex
+    player = obs.current.players[your_idx]
+    opponent = obs.current.players[1 - your_idx]
+    
+    # 1. Calculate remaining cards in our deck & prize
+    start_deck = list(_CURRENT_DECK)
+    if not start_deck:
+        start_deck = [3] * 60
+        
+    known_cards = []
+    if player.active and player.active[0] is not None:
+        known_cards.append(player.active[0].id)
+        known_cards.extend([c.id for c in player.active[0].energyCards])
+    for pk in player.bench:
+        if pk is not None:
+            known_cards.append(pk.id)
+            known_cards.extend([c.id for c in pk.energyCards])
+    if player.hand:
+        known_cards.extend([c.id for c in player.hand])
+    if player.discard:
+        known_cards.extend([c.id for c in player.discard])
+        
+    remaining_pool = list(start_deck)
+    for cid in known_cards:
+        if cid in remaining_pool:
+            remaining_pool.remove(cid)
+            
+    prize_count = len(player.prize)
+    your_prize = remaining_pool[:prize_count]
+    your_deck = remaining_pool[prize_count:]
+    
+    while len(your_prize) < prize_count:
+        your_prize.append(3)
+    while len(your_deck) < player.deckCount:
+        your_deck.append(3)
+    your_deck = your_deck[:player.deckCount]
+    
+    # 2. Opponent predictions
+    opp_start_deck = list(_CURRENT_DECK)
+    if not opp_start_deck:
+        opp_start_deck = [3] * 60
+        
+    opp_known = []
+    if opponent.active and opponent.active[0] is not None:
+        opp_known.append(opponent.active[0].id)
+        opp_known.extend([c.id for c in opponent.active[0].energyCards])
+    for pk in opponent.bench:
+        if pk is not None:
+            opp_known.append(pk.id)
+            opp_known.extend([c.id for c in pk.energyCards])
+    if opponent.discard:
+        opp_known.extend([c.id for c in opponent.discard])
+        
+    opp_remaining = list(opp_start_deck)
+    for cid in opp_known:
+        if cid in opp_remaining:
+            opp_remaining.remove(cid)
+            
+    opp_prize_count = len(opponent.prize)
+    opp_hand_count = opponent.handCount
+    
+    opponent_prize = opp_remaining[:opp_prize_count]
+    opponent_hand = opp_remaining[opp_prize_count : opp_prize_count + opp_hand_count]
+    opponent_deck = opp_remaining[opp_prize_count + opp_hand_count :]
+    
+    while len(opponent_prize) < opp_prize_count:
+        opponent_prize.append(3)
+    while len(opponent_hand) < opp_hand_count:
+        opponent_hand.append(3)
+    while len(opponent_deck) < opponent.deckCount:
+        opponent_deck.append(3)
+    opponent_deck = opponent_deck[:opponent.deckCount]
+    
+    opponent_active = []
+    active = opponent.active
+    if len(active) > 0 and active[0] is None:
+        basic_id = 722 if is_playing_abomasnow() else 77
+        for cid in opp_remaining:
+            card_data = CARD_DATA_MAP.get(cid)
+            if card_data and card_data.basic:
+                basic_id = cid
+                break
+        opponent_active = [basic_id]
+        
+    return your_deck, your_prize, opponent_deck, opponent_prize, opponent_hand, opponent_active
 
 def agent(obs_dict: dict) -> list[int]:
     """Implement Your Pokémon Trading Card Game Agent.
@@ -423,6 +539,65 @@ def agent(obs_dict: dict) -> list[int]:
         # The deck must comply with the Pokémon Trading Card Game rules.
         return read_deck_csv()
         
+    # --- PHASE 0: LOOK-AHEAD SEARCH VERIFICATION ---
+    options = obs.select.option
+    max_count = obs.select.maxCount
+    your_idx = obs.current.yourIndex
+    
+    if max_count == 1 and options and len(options) > 1:
+        best_search_score = -999999.0
+        best_search_idx = -1
+        
+        try:
+            your_deck, your_prize, opponent_deck, opponent_prize, opponent_hand, opponent_active = predict_card_lists(obs)
+            
+            for i in range(len(options)):
+                try:
+                    root = search_begin(obs, your_deck, your_prize, opponent_deck, opponent_prize, opponent_hand, opponent_active)
+                    child = search_step(root.searchId, [i])
+                    
+                    child_obs = child.observation
+                    child_current = child_obs.current
+                    child_result = child_current.result if child_current else -1
+                    
+                    base_score = score_option(obs, options[i], obs.select.context, your_idx)
+                    
+                    if child_result == your_idx:
+                        search_score = 999999.0
+                    elif child_result != -1:
+                        search_score = -999999.0
+                    else:
+                        search_score = base_score
+                        player_before = obs.current.players[your_idx]
+                        player_after = child_current.players[your_idx] if child_current else None
+                        
+                        if player_after:
+                            prizes_before = sum(1 for p in player_before.prize if p is not None)
+                            prizes_after = sum(1 for p in player_after.prize if p is not None)
+                            if prizes_after < prizes_before:
+                                search_score += 5000.0 * (prizes_before - prizes_after)
+                                
+                            active_after = player_after.active if player_after else []
+                            if not active_after or active_after[0] is None:
+                                search_score -= 3000.0
+                                
+                    search_release(child.searchId)
+                    
+                    if search_score > best_search_score:
+                        best_search_score = search_score
+                        best_search_idx = i
+                except Exception:
+                    pass
+            
+            search_end()
+            if best_search_idx != -1 and best_search_score > -500000.0:
+                return [best_search_idx]
+        except Exception:
+            try:
+                search_end()
+            except Exception:
+                pass
+                
     # Attempt DRL inference if ONNX is available and loaded
     try:
         init_onnx_model()
