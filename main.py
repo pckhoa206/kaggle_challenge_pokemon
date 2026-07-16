@@ -49,6 +49,41 @@ except Exception:
 def is_playing_abomasnow() -> bool:
     return 723 in _CURRENT_DECK
 
+# Opponent Hand Tracking database
+_OPPONENT_HAND_TRACKED = {} # maps serial -> cardId
+
+def update_opponent_hand_tracking(obs: Observation, your_idx: int):
+    global _OPPONENT_HAND_TRACKED
+    
+    # Reset tracking at the start of the match
+    if not obs.current or obs.current.turn <= 1:
+        _OPPONENT_HAND_TRACKED = {}
+        return
+        
+    opp_idx = 1 - your_idx
+    logs = obs.logs or []
+    for log in logs:
+        try:
+            ltype = int(log.type)
+        except Exception:
+            continue
+            
+        # 1. Card moving to opponent hand (revealed)
+        if ltype == 6: # MOVE_CARD
+            if log.playerIndex == opp_idx and log.toArea == AreaType.HAND:
+                if log.serial and log.cardId:
+                    _OPPONENT_HAND_TRACKED[log.serial] = log.cardId
+                    
+        # 2. Card moving out of opponent hand
+        elif ltype in (6, 7): # MOVE_CARD or MOVE_CARD_REVERSE
+            if log.playerIndex == opp_idx and log.fromArea == AreaType.HAND:
+                _OPPONENT_HAND_TRACKED.pop(log.serial, None)
+                    
+        # 3. Actions played from hand
+        elif ltype in (10, 11, 12): # PLAY, ATTACH, EVOLVE
+            if log.playerIndex == opp_idx:
+                _OPPONENT_HAND_TRACKED.pop(log.serial, None)
+
 # Global variables for ONNX inference session
 _ONNX_SESSION = None
 _ONNX_LOADED = False
@@ -490,6 +525,9 @@ def predict_card_lists(obs: Observation):
     if opponent.discard:
         opp_known.extend([c.id for c in opponent.discard])
         
+    opp_tracked_hand = list(_OPPONENT_HAND_TRACKED.values())
+    opp_known.extend(opp_tracked_hand)
+    
     opp_remaining = list(opp_start_deck)
     for cid in opp_known:
         if cid in opp_remaining:
@@ -498,9 +536,13 @@ def predict_card_lists(obs: Observation):
     opp_prize_count = len(opponent.prize)
     opp_hand_count = opponent.handCount
     
+    opponent_hand = list(opp_tracked_hand)[:opp_hand_count]
+    needed_hand_slots = opp_hand_count - len(opponent_hand)
+    opponent_hand.extend(opp_remaining[:needed_hand_slots])
+    opp_remaining = opp_remaining[needed_hand_slots:]
+    
     opponent_prize = opp_remaining[:opp_prize_count]
-    opponent_hand = opp_remaining[opp_prize_count : opp_prize_count + opp_hand_count]
-    opponent_deck = opp_remaining[opp_prize_count + opp_hand_count :]
+    opponent_deck = opp_remaining[opp_prize_count:]
     
     while len(opponent_prize) < opp_prize_count:
         opponent_prize.append(3)
@@ -539,10 +581,12 @@ def agent(obs_dict: dict) -> list[int]:
         # The deck must comply with the Pokémon Trading Card Game rules.
         return read_deck_csv()
         
+    your_idx = obs.current.yourIndex if obs.current else 0
+    update_opponent_hand_tracking(obs, your_idx)
+        
     # --- PHASE 0: LOOK-AHEAD SEARCH VERIFICATION ---
     options = obs.select.option
     max_count = obs.select.maxCount
-    your_idx = obs.current.yourIndex
     
     if max_count == 1 and options and len(options) > 1:
         best_search_score = -999999.0
