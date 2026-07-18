@@ -28,6 +28,11 @@ try:
 except Exception:
     ATTACK_DMG_MAP = {}
 
+try:
+    ATTACK_MAP = {a.attackId: a for a in all_attack()}
+except Exception:
+    ATTACK_MAP = {}
+
 def _read_deck_csv_top() -> list[int]:
     file_path = "deck.csv"
     if not os.path.exists(file_path):
@@ -48,6 +53,48 @@ except Exception:
 
 def is_playing_abomasnow() -> bool:
     return 723 in _CURRENT_DECK
+
+OPPONENT_DECKS = {
+    "aggro_rush": [3]*43 + [721]*4 + [1126]*1 + [1152]*4 + [1227]*4 + [1235]*4,
+    "control_disrupt": [3]*35 + [721]*2 + [722]*4 + [723]*4 + [1145]*4 + [1158]*1 + [1205]*2 + [1227]*4 + [1235]*4,
+    "tank_boss": [2]*40 + [756]*20,
+    "turbo_energy": [3]*35 + [722]*4 + [723]*4 + [1126]*1 + [1145]*4 + [1205]*4 + [1227]*4 + [1235]*4,
+    "fast_aggro": [2]*32 + [31]*4 + [46]*4 + [76]*4 + [1145]*4 + [1152]*4 + [1227]*4 + [1235]*4,
+    "mill_stall": [6]*32 + [25]*4 + [27]*4 + [28]*4 + [1145]*4 + [1152]*4 + [1227]*4 + [1235]*4,
+    "tank_heal": [1]*32 + [33]*4 + [35]*4 + [47]*4 + [1145]*4 + [1152]*4 + [1227]*4 + [1235]*4
+}
+
+def detect_opponent_deck(opp_known: list[int]) -> list[int]:
+    # Count card occurrences in opp_known
+    counts = {}
+    for cid in opp_known:
+        counts[cid] = counts.get(cid, 0) + 1
+        
+    # Check for specific cards that uniquely identify an archetype
+    if 756 in counts or 2 in counts:  # Mega Kangaskhan ex or Fire energy
+        if 756 in counts:
+            return list(OPPONENT_DECKS["tank_boss"])
+        else:
+            return list(OPPONENT_DECKS["fast_aggro"])
+            
+    if 25 in counts or 27 in counts or 28 in counts or 6 in counts:  # Pinsir, Iron Leaves, Poltchageist, Fighting energy
+        return list(OPPONENT_DECKS["mill_stall"])
+        
+    if 33 in counts or 35 in counts or 47 in counts or 1 in counts:  # Froakie, Walking Wake, Totodile, Grass energy
+        return list(OPPONENT_DECKS["tank_heal"])
+        
+    if 722 in counts or 723 in counts:  # Snover, Mega Abomasnow ex
+        if 721 in counts:  # Kyogre
+            return list(OPPONENT_DECKS["control_disrupt"])
+        else:
+            return list(OPPONENT_DECKS["turbo_energy"])
+            
+    if 721 in counts:  # Kyogre only
+        return list(OPPONENT_DECKS["aggro_rush"])
+        
+    # Fallback to our own deck list if we can't identify the opponent
+    return list(_CURRENT_DECK) if _CURRENT_DECK else [3] * 60
+
 
 # Opponent Hand Tracking database
 _OPPONENT_HAND_TRACKED = {} # maps serial -> cardId
@@ -313,21 +360,39 @@ def get_max_attack_damage(obs, your_idx: int) -> int:
     active_pkmn = player.active[0] if player.active else None
     if not active_pkmn:
         return 0
-    if active_pkmn.id == 46: # Gouging Fire ex
-        return 260 # Blaze Blitz
-    elif active_pkmn.id == 31: # Chi-Yu
-        return 60 # Ground Melter
-    elif active_pkmn.id == 77: # Litten
+        
+    card_data = CARD_DATA_MAP.get(active_pkmn.id)
+    if not card_data or not card_data.attacks:
         return 10
-    elif active_pkmn.id == 97: # Litwick
-        return 20
-    elif active_pkmn.id == 76: # Slugma
-        return 10
-    elif active_pkmn.id == 723: # Mega Abomasnow ex
-        return 200 # Hammer-lanche / Frost Barrier
-    elif active_pkmn.id == 722: # Snover
-        return 30 # Icy Snow
-    return 10
+        
+    max_dmg = 0
+    for attack_id in card_data.attacks:
+        a = ATTACK_MAP.get(attack_id)
+        if a:
+            dmg = a.damage
+            if a.name == "Hammer-lanche":
+                dmg = 300
+            elif a.name == "Riptide":
+                discard_pile = player.discard or []
+                water_in_discard = sum(1 for c in discard_pile if c.id == 3)
+                dmg = water_in_discard * 20
+            elif a.name == "Crystal Fall":
+                water_in_play = 0
+                if player.active and player.active[0]:
+                    water_in_play += len(player.active[0].energies)
+                for pk in player.bench:
+                    if pk:
+                        water_in_play += len(pk.energies)
+                dmg = 120 if water_in_play >= 4 else 30
+            elif a.name == "Gale Thrust":
+                dmg = 120
+        else:
+            dmg = ATTACK_DMG_MAP.get(attack_id, 0)
+            
+        if dmg > max_dmg:
+            max_dmg = dmg
+            
+    return max_dmg if max_dmg > 0 else 10
 
 def calculate_enemy_max_damage_next_turn(obs: Observation, opp_idx: int) -> int:
     """Safely estimate the maximum attack damage of the opponent active Pokemon next turn."""
@@ -337,13 +402,35 @@ def calculate_enemy_max_damage_next_turn(obs: Observation, opp_idx: int) -> int:
         return 0
     card_data = CARD_DATA_MAP.get(opp_active.id)
     if not card_data or not card_data.attacks:
-        return 30 # default baseline damage
+        return 30
         
     max_dmg = 0
     for attack_id in card_data.attacks:
-        dmg = ATTACK_DMG_MAP.get(attack_id, 0)
+        a = ATTACK_MAP.get(attack_id)
+        if a:
+            dmg = a.damage
+            if a.name == "Hammer-lanche":
+                dmg = 300
+            elif a.name == "Riptide":
+                discard_pile = opponent.discard or []
+                water_in_discard = sum(1 for c in discard_pile if c.id == 3)
+                dmg = water_in_discard * 20
+            elif a.name == "Crystal Fall":
+                water_in_play = 0
+                if opponent.active and opponent.active[0]:
+                    water_in_play += len(opponent.active[0].energies)
+                for pk in opponent.bench:
+                    if pk:
+                        water_in_play += len(pk.energies)
+                dmg = 120 if water_in_play >= 4 else 30
+            elif a.name == "Gale Thrust":
+                dmg = 120
+        else:
+            dmg = ATTACK_DMG_MAP.get(attack_id, 0)
+            
         if dmg > max_dmg:
             max_dmg = dmg
+            
     return max_dmg if max_dmg > 0 else 30
 
 def score_option(obs, opt, context, your_idx: int) -> float:
@@ -355,22 +442,24 @@ def score_option(obs, opt, context, your_idx: int) -> float:
     card_id = get_card_id(obs, opt, your_idx)
     
     if context == SelectContext.SETUP_ACTIVE_POKEMON:
-        if card_id in (46, 723): score = 1000.0
-        elif card_id in (31, 722): score = 500.0
+        if card_id == 722: score = 1000.0  # Snover is primary active Pokemon!
+        elif card_id == 721: score = 500.0   # Kyogre is backup
+        elif card_id in (31, 77, 97, 76): score = 300.0  # Fire basics
         else: score = 100.0
             
     elif context == SelectContext.SETUP_BENCH_POKEMON:
-        if card_id in (46, 723): score = 1000.0
-        elif card_id in (31, 77, 97, 76, 722): score = 800.0
+        if card_id == 722: score = 1000.0  # Snover first
+        elif card_id == 721: score = 800.0   # Kyogre second
+        elif card_id in (31, 77, 97, 76, 803): score = 500.0  # Others
         else: score = 100.0
             
     elif context in (SelectContext.SWITCH, SelectContext.TO_ACTIVE):
         pkmn = get_pokemon_from_option(obs, opt, your_idx)
         if pkmn:
             energy_count = len(pkmn.energies)
-            if pkmn.id in (46, 723):
+            if pkmn.id in (723, 46):  # Mega Abomasnow ex, Gouging Fire ex
                 score = 10000.0 + energy_count * 1000.0 + pkmn.hp
-            elif pkmn.id == 31:
+            elif pkmn.id in (721, 803, 31, 583):  # Kyogre, Suicune, Chi-Yu, Keldeo ex
                 score = 8000.0 + energy_count * 1000.0 + pkmn.hp
             else:
                 score = 500.0 + pkmn.hp
@@ -381,10 +470,14 @@ def score_option(obs, opt, context, your_idx: int) -> float:
         pkmn = get_pokemon_from_option(obs, opt, your_idx)
         if pkmn:
             energy_count = len(pkmn.energies)
-            if pkmn.id in (46, 723) and energy_count < 3:
+            if pkmn.id in (723, 46) and energy_count < 3:
                 score = 3200.0 if opt.area == AreaType.ACTIVE else 3000.0
-            elif pkmn.id == 31 and energy_count < 2:
+            elif pkmn.id in (721, 803) and energy_count < 3:  # Kyogre, Suicune
+                score = 3100.0 if opt.area == AreaType.ACTIVE else 2900.0
+            elif pkmn.id in (31, 583) and energy_count < 2:  # Chi-Yu, Keldeo ex
                 score = 2900.0 if opt.area == AreaType.ACTIVE else 2400.0
+            elif pkmn.id == 722 and energy_count < 2:  # Snover
+                score = 2500.0 if opt.area == AreaType.ACTIVE else 2000.0
             else:
                 score = 1000.0
         else:
@@ -395,10 +488,43 @@ def score_option(obs, opt, context, your_idx: int) -> float:
         else: score = 100.0
             
     elif context in (SelectContext.TO_HAND, SelectContext.TO_BENCH, SelectContext.TO_FIELD):
-        if card_id in (46, 723): score = 3000.0
-        elif card_id == 31: score = 2500.0
-        elif card_id in (1235, 1205, 1227): score = 1800.0
-        elif card_id in (2, 3): score = 1000.0
+        # Check if we have Snover in play
+        has_snover_in_play = False
+        for pk in player.bench:
+            if pk and pk.id == 722:
+                has_snover_in_play = True
+        if player.active and player.active[0] and player.active[0].id == 722:
+            has_snover_in_play = True
+            
+        # Check if we have Abomasnow in hand/play
+        has_abomasnow = False
+        if player.active and player.active[0] and player.active[0].id == 723:
+            has_abomasnow = True
+        for pk in player.bench:
+            if pk and pk.id == 723:
+                has_abomasnow = True
+        for c in (player.hand or []):
+            if c.id == 723:
+                has_abomasnow = True
+                
+        if card_id == 723:
+            score = 3000.0 if has_snover_in_play else 1500.0
+        elif card_id == 722:
+            score = 2900.0 if (not has_snover_in_play or not has_abomasnow) else 1000.0
+        elif card_id == 721:
+            score = 2500.0
+        elif card_id in (803, 583, 31):
+            score = 2000.0
+        elif card_id in (1235, 1205, 1227, 1145, 1158, 1262):
+            score = 1800.0
+        elif card_id in (2, 3):
+            score = 1000.0
+        else:
+            score = 500.0
+            
+    elif context in (SelectContext.EVOLVES_TO, SelectContext.EVOLVES_FROM):
+        if card_id == 723: score = 3000.0  # Mega Abomasnow ex
+        elif card_id == 722: score = 2500.0  # Snover
         else: score = 500.0
             
     elif context in (SelectContext.ACTIVATE, SelectContext.MULLIGAN, SelectContext.COIN_HEAD, SelectContext.IS_FIRST) or opt_type in (OptionType.YES, OptionType.NO):
@@ -434,37 +560,61 @@ def score_option(obs, opt, context, your_idx: int) -> float:
                     if card.id in (2, 3): 
                         energy_count = len(pkmn.energies)
                         if opt.inPlayArea == AreaType.ACTIVE:
-                            if (pkmn.id == 46 or pkmn.id == 723) and energy_count < 3: score = 8800.0
-                            elif pkmn.id == 31 and energy_count < 2: score = 8750.0
+                            if pkmn.id in (723, 46) and energy_count < 3: score = 8800.0
+                            elif pkmn.id in (721, 803) and energy_count < 3: score = 8780.0
+                            elif pkmn.id in (31, 583) and energy_count < 2: score = 8750.0
+                            elif pkmn.id == 722 and energy_count < 2: score = 8500.0
                             else: score = 1000.0
                         elif opt.inPlayArea == AreaType.BENCH:
-                            if (pkmn.id == 46 or pkmn.id == 723) and energy_count < 3: score = 8600.0
-                            elif pkmn.id == 31 and energy_count < 2: score = 8500.0
+                            if pkmn.id in (723, 46) and energy_count < 3: score = 8600.0
+                            elif pkmn.id in (721, 803) and energy_count < 3: score = 8580.0
+                            elif pkmn.id in (31, 583) and energy_count < 2: score = 8500.0
+                            elif pkmn.id == 722 and energy_count < 2: score = 8300.0
                             else: score = 900.0
                 
         elif opt_type == OptionType.PLAY:
             card = get_card_id(obs, opt, your_idx)
+            
+            # Check if we have Snover in play
+            has_snover_in_play = False
+            for pk in player.bench:
+                if pk and pk.id == 722:
+                    has_snover_in_play = True
+            if player.active and player.active[0] and player.active[0].id == 722:
+                has_snover_in_play = True
+                
             if card == 1205: # Cyrano (Search ex)
                 has_ex = False
                 active_pkmn = player.active[0] if player.active else None
                 if active_pkmn and active_pkmn.id in (46, 723):
                     has_ex = True
-                for pkmn in player.bench:
-                    if pkmn.id in (46, 723):
+                for pk in player.bench:
+                    if pk.id in (46, 723):
                         has_ex = True
                 for c in (player.hand or []):
                     if c.id in (46, 723):
                         has_ex = True
                 
-                # If we don't have any ex, Cyrano is top priority. Otherwise, save supporter turn for drawing.
-                score = 9400.0 if not has_ex else 100.0
+                # If we don't have any ex and have Snover in play, Cyrano is top priority. Otherwise, save supporter turn for drawing.
+                score = 9400.0 if (not has_ex and has_snover_in_play) else 100.0
             elif card == 1235: # Waitress (Draw)
                 score = 9400.0
             elif card == 1227: # Lillie (Draw)
                 score = 9300.0
             elif card == 1145: # Mega Signal
-                score = 9500.0 if is_playing_abomasnow() else 100.0
+                score = 9500.0 if (is_playing_abomasnow() and has_snover_in_play) else 100.0
+            elif card == 1262: # Surfing Beach
+                score = 8200.0
+            elif card == 1158: # Maximum Belt
+                score = 8100.0
             else: score = 8000.0
+                
+        elif opt_type in (OptionType.ABILITY, OptionType.SKILL):
+            card = get_card_id(obs, opt, your_idx)
+            if card == 1262: # Surfing Beach switch skill
+                score = 7800.0
+            else:
+                score = 1000.0
                 
         elif opt_type == OptionType.RETREAT:
             score = 100.0
@@ -510,10 +660,6 @@ def predict_card_lists(obs: Observation):
     your_deck = your_deck[:player.deckCount]
     
     # 2. Opponent predictions
-    opp_start_deck = list(_CURRENT_DECK)
-    if not opp_start_deck:
-        opp_start_deck = [3] * 60
-        
     opp_known = []
     if opponent.active and opponent.active[0] is not None:
         opp_known.append(opponent.active[0].id)
@@ -527,6 +673,8 @@ def predict_card_lists(obs: Observation):
         
     opp_tracked_hand = list(_OPPONENT_HAND_TRACKED.values())
     opp_known.extend(opp_tracked_hand)
+    
+    opp_start_deck = detect_opponent_deck(opp_known)
     
     opp_remaining = list(opp_start_deck)
     for cid in opp_known:
@@ -595,52 +743,54 @@ def agent(obs_dict: dict) -> list[int]:
         try:
             your_deck, your_prize, opponent_deck, opponent_prize, opponent_hand, opponent_active = predict_card_lists(obs)
             
-            for i in range(len(options)):
-                try:
-                    root = search_begin(obs, your_deck, your_prize, opponent_deck, opponent_prize, opponent_hand, opponent_active)
-                    child = search_step(root.searchId, [i])
-                    
-                    child_obs = child.observation
-                    child_current = child_obs.current
-                    child_result = child_current.result if child_current else -1
-                    
-                    base_score = score_option(obs, options[i], obs.select.context, your_idx)
-                    
-                    if child_result == your_idx:
-                        search_score = 999999.0
-                    elif child_result != -1:
-                        search_score = -999999.0
-                    else:
-                        search_score = base_score
-                        player_before = obs.current.players[your_idx]
-                        player_after = child_current.players[your_idx] if child_current else None
+            root = search_begin(obs, your_deck, your_prize, opponent_deck, opponent_prize, opponent_hand, opponent_active)
+            try:
+                for i in range(len(options)):
+                    try:
+                        child = search_step(root.searchId, [i])
                         
-                        if player_after:
-                            prizes_before = sum(1 for p in player_before.prize if p is not None)
-                            prizes_after = sum(1 for p in player_after.prize if p is not None)
-                            if prizes_after < prizes_before:
-                                search_score += 5000.0 * (prizes_before - prizes_after)
-                                
-                            active_after = player_after.active if player_after else []
-                            if not active_after or active_after[0] is None:
-                                search_score -= 3000.0
-                                
-                    search_release(child.searchId)
-                    
-                    if search_score > best_search_score:
-                        best_search_score = search_score
-                        best_search_idx = i
+                        child_obs = child.observation
+                        child_current = child_obs.current
+                        child_result = child_current.result if child_current else -1
+                        
+                        base_score = score_option(obs, options[i], obs.select.context, your_idx)
+                        
+                        if child_result == your_idx:
+                            search_score = 999999.0
+                        elif child_result != -1:
+                            search_score = -999999.0
+                        else:
+                            search_score = base_score
+                            player_before = obs.current.players[your_idx]
+                            player_after = child_current.players[your_idx] if child_current else None
+                            
+                            if player_after:
+                                prizes_before = sum(1 for p in player_before.prize if p is not None)
+                                prizes_after = sum(1 for p in player_after.prize if p is not None)
+                                if prizes_after < prizes_before:
+                                    search_score += 5000.0 * (prizes_before - prizes_after)
+                                    
+                                active_after = player_after.active if player_after else []
+                                if not active_after or active_after[0] is None:
+                                    search_score -= 3000.0
+                                    
+                        search_release(child.searchId)
+                        
+                        if search_score > best_search_score:
+                            best_search_score = search_score
+                            best_search_idx = i
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    search_end()
                 except Exception:
                     pass
             
-            search_end()
             if best_search_idx != -1 and best_search_score > -500000.0:
                 return [best_search_idx]
         except Exception:
-            try:
-                search_end()
-            except Exception:
-                pass
+            pass
                 
     # Attempt DRL inference if ONNX is available and loaded
     try:
@@ -655,6 +805,8 @@ def agent(obs_dict: dict) -> list[int]:
             best_idx = 0
             
             if max_count == 1 and len(options) > 1:
+                # Find if we have any other preparation options
+                has_prep_options = any(opt.type in (OptionType.PLAY, OptionType.ATTACH, OptionType.EVOLVE) for opt in options)
                 for i, opt in enumerate(options):
                     try:
                         score = score_option(obs, opt, obs.select.context, your_idx)
@@ -663,7 +815,8 @@ def agent(obs_dict: dict) -> list[int]:
                     if score > best_score:
                         best_score = score
                         best_idx = i
-                if best_score >= 12000.0:
+                # Only override if it's a GOD MOVE and we don't have other preparation options left
+                if best_score >= 12000.0 and not has_prep_options:
                     # GOD MOVE DETECTED! OVERRIDE RL!
                     return [best_idx]
             
