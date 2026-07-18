@@ -151,7 +151,7 @@ def export_to_onnx(model, onnx_path="model.onnx"):
 
 def main():
     parser = argparse.ArgumentParser(description="Self-play DRL training pipeline for Pokemon TCG.")
-    parser.add_argument("--steps", type=int, default=50000, help="Total number of steps to train.")
+    parser.add_argument("--steps", type=int, default=3600000, help="Total number of steps to train.")
     args = parser.parse_args()
 
     # 1. Setup Environment
@@ -184,7 +184,7 @@ def main():
 
     # 4. Training loop with self-play evaluation
     total_steps = args.steps
-    steps_per_epoch = 10000
+    steps_per_epoch = 100000
     current_step = 0
     opponent_mode = "heuristic"
 
