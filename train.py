@@ -150,8 +150,12 @@ def export_to_onnx(model, onnx_path="model.onnx"):
     print(f"Successfully exported model to ONNX: {onnx_path} (size ~ {os.path.getsize(onnx_path) / 1024:.1f} KB)")
 
 def main():
+    import time
+    start_time = time.time()
+    max_duration = 29700  # 8 hours 15 minutes (Kaggle limit is 9 hours)
+    
     parser = argparse.ArgumentParser(description="Self-play DRL training pipeline for Pokemon TCG.")
-    parser.add_argument("--steps", type=int, default=3600000, help="Total number of steps to train.")
+    parser.add_argument("--steps", type=int, default=5000000, help="Total number of steps to train.")
     args = parser.parse_args()
 
     # 1. Setup Environment
@@ -194,6 +198,12 @@ def main():
     print(f"Starting Training: Total steps = {total_steps}, Epoch steps = {steps_per_epoch}")
     
     while current_step < total_steps:
+        # Check elapsed time to prevent Kaggle timeout
+        elapsed_time = time.time() - start_time
+        if elapsed_time > max_duration:
+            print(f"Time limit reached: Elapsed time is {elapsed_time/3600:.2f} hours. Stopping training early to save model safely.")
+            break
+            
         # Train for 1 epoch
         model.learn(total_timesteps=steps_per_epoch, reset_num_timesteps=False)
         current_step += steps_per_epoch
