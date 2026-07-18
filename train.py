@@ -13,7 +13,7 @@ try:
 except ImportError as e:
     print(f"Error: Required library is missing ({e}).")
     print("Please install requirements using the following command:")
-    print("  pip install gymnasium stable-baselines3 sb3-contrib onnx onnxruntime torch")
+    print("  pip install gymnasium stable-baselines3 sb3-contrib onnx onnxruntime torch onnxscript")
     sys.exit(1)
 
 import numpy as np
