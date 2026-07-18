@@ -236,7 +236,7 @@ def run_onnx_inference(obs: Observation) -> list[int]:
     
     state_vec = extract_state_for_onnx(obs)
     
-    # Expand dims to batch size 1 (1, 144)
+    # Expand dims to batch size 1 (1, 164)
     input_data = np.expand_dims(np.array(state_vec, dtype=np.float32), axis=0)
     
     # Feed to ONNX session
@@ -737,8 +737,10 @@ def agent(obs_dict: dict) -> list[int]:
     max_count = obs.select.maxCount
     
     if max_count == 1 and options and len(options) > 1:
-        best_search_score = -999999.0
+        best_search_score = -9999999.0
         best_search_idx = -1
+        sim_count = 0
+        MAX_SIMS = 100  # Safety limit for number of simulations
         
         try:
             your_deck, your_prize, opponent_deck, opponent_prize, opponent_hand, opponent_active = predict_card_lists(obs)
@@ -746,8 +748,11 @@ def agent(obs_dict: dict) -> list[int]:
             root = search_begin(obs, your_deck, your_prize, opponent_deck, opponent_prize, opponent_hand, opponent_active)
             try:
                 for i in range(len(options)):
+                    if sim_count > MAX_SIMS:
+                        break
                     try:
                         child = search_step(root.searchId, [i])
+                        sim_count += 1
                         
                         child_obs = child.observation
                         child_current = child_obs.current
@@ -755,11 +760,70 @@ def agent(obs_dict: dict) -> list[int]:
                         
                         base_score = score_option(obs, options[i], obs.select.context, your_idx)
                         
+                        # Check if this choice is a "preparation" action (e.g. we can make another choice immediately)
+                        is_prep = options[i].type in (OptionType.PLAY, OptionType.ATTACH, OptionType.EVOLVE, OptionType.ABILITY, OptionType.SKILL, OptionType.RETREAT)
+                        
                         if child_result == your_idx:
-                            search_score = 999999.0
+                            # Immediate win
+                            search_score = 9999999.0
                         elif child_result != -1:
-                            search_score = -999999.0
+                            # Immediate loss
+                            search_score = -9999999.0
+                        elif is_prep and child_obs.select and child_obs.select.option and sim_count < MAX_SIMS:
+                            # Deep search (2nd step)
+                            best_child2_score = -9999999.0
+                            child_options = child_obs.select.option
+                            
+                            # Limit branching factor in step 2 if there are too many options
+                            step2_options_limit = 10 if len(options) > 5 else 20
+                            sorted_child_opts = []
+                            for j, c_opt in enumerate(child_options):
+                                try:
+                                    c_score = score_option(child_obs, c_opt, child_obs.select.context, your_idx)
+                                except Exception:
+                                    c_score = 100.0
+                                sorted_child_opts.append((c_score, j))
+                            sorted_child_opts.sort(key=lambda x: x[0], reverse=True)
+                            
+                            for c_score, j in sorted_child_opts[:step2_options_limit]:
+                                if sim_count > MAX_SIMS:
+                                    break
+                                try:
+                                    child2 = search_step(child.searchId, [j])
+                                    sim_count += 1
+                                    
+                                    child2_obs = child2.observation
+                                    child2_current = child2_obs.current
+                                    child2_result = child2_current.result if child2_current else -1
+                                    
+                                    if child2_result == your_idx:
+                                        score2 = 9999999.0
+                                    elif child2_result != -1:
+                                        score2 = -9999999.0
+                                    else:
+                                        score2 = base_score + c_score
+                                        player_before = obs.current.players[your_idx]
+                                        player_after = child2_current.players[your_idx] if child2_current else None
+                                        
+                                        if player_after:
+                                            prizes_before = sum(1 for p in player_before.prize if p is not None)
+                                            prizes_after = sum(1 for p in player_after.prize if p is not None)
+                                            if prizes_after < prizes_before:
+                                                score2 += 5000.0 * (prizes_before - prizes_after)
+                                                
+                                            active_after = player_after.active if player_after else []
+                                            if not active_after or active_after[0] is None:
+                                                score2 -= 3000.0
+                                                
+                                    search_release(child2.searchId)
+                                    if score2 > best_child2_score:
+                                        best_child2_score = score2
+                                except Exception:
+                                    pass
+                            
+                            search_score = best_child2_score if best_child2_score > -5000000.0 else base_score
                         else:
+                            # 1-step outcome (terminating action or max simulations reached)
                             search_score = base_score
                             player_before = obs.current.players[your_idx]
                             player_after = child_current.players[your_idx] if child_current else None
@@ -787,7 +851,7 @@ def agent(obs_dict: dict) -> list[int]:
                 except Exception:
                     pass
             
-            if best_search_idx != -1 and best_search_score > -500000.0:
+            if best_search_idx != -1 and best_search_score > -5000000.0:
                 return [best_search_idx]
         except Exception:
             pass
